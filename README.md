@@ -75,7 +75,7 @@ This will:
 5. Generate json metadata ()
 6. Upload everything back to Supabase
 
-*(You can create your own entrypoints or cron-based workflows depending on use case)*
+> *(You can create your own entrypoints or cron-based workflows depending on use case)*
 
 
 ---
