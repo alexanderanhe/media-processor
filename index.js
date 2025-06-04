@@ -9,6 +9,8 @@ import axios from 'axios';
 import FormData from 'form-data';
 import { exec } from 'child_process';
 import { createClient } from '@supabase/supabase-js';
+import { fileTypeFromFile } from 'file-type';
+
 config();
 
 // Configuración
@@ -71,6 +73,9 @@ async function downloadFromSupabase(remotePath, localPath) {
   const buffer = Buffer.from(await data.arrayBuffer());
   fs.writeFileSync(localPath, buffer);
   console.log("✅ Video descargado:", localPath);
+}
+async function copyLocalFileToTempFolder(localPath, tempLocalFile) {
+  await fsp.copyFile(localPath, tempLocalFile);
 }
 
 // Paso 3: Limpiar video con ffmpeg (remover metadata)
@@ -305,21 +310,35 @@ async function deleteQueueSupabase(remotePath) {
   try {
     await removeTempFolder(); // Remove if exists
 
+    const localFiles = process.argv.slice(2).filter(f => fs.existsSync(f));
+    const areLocalFiles = !!localFiles.length;
+
     console.log("📋 Obteniendo lista de todos los videos en queue...");
-    const list = await listQueueFilesFromSupabase(QUEUE_FOLDER);
+    const list = areLocalFiles
+      ? localFiles
+      : await listQueueFilesFromSupabase(QUEUE_FOLDER);
 
     for (const file of list) {
       fs.mkdirSync(TEMP_DIR, { recursive: true });
-      const INPUT_PATH = `${QUEUE_FOLDER}/${file.name}`;
-      const TYPE = file.metadata.mimetype;
-      const baseName = path.basename(INPUT_PATH, ".mp4");
+      const INPUT_PATH = areLocalFiles ? file : `${QUEUE_FOLDER}/${file.name}`;
+      const TYPE = areLocalFiles
+        ? (await fileTypeFromFile(INPUT_PATH))?.mime
+        : file.metadata.mimetype.split('/')[0];
+
+      console.log(`🗂️ Procesando archivo tipo ${TYPE}`)
+      const baseName = path.basename(INPUT_PATH, path.extname(INPUT_PATH));
       const timestamp = Date.now();
       const folderFiles = `processed/${baseName}-${timestamp}`;
 
       let readyToUpload = null;
       if (TYPE.startsWith("video")) {
-        console.log("📥 Descargando video...");
-        await downloadFromSupabase(INPUT_PATH, RAW_VIDEO);
+        if (!areLocalFiles) {
+          console.log("📥 Descargando video...");
+          await downloadFromSupabase(INPUT_PATH, RAW_VIDEO);
+        } else {
+          console.log("🗃️ Copiando video a carpeta temporal...");
+          await copyLocalFileToTempFolder(INPUT_PATH, RAW_VIDEO);
+        }
     
         console.log("🧼 Limpiando video...");
         await cleanVideo(RAW_VIDEO, CLEAN_VIDEO);
@@ -362,8 +381,13 @@ async function deleteQueueSupabase(remotePath) {
           "💾 Json:" : [JSONFILE, `${folderFiles}/${baseName}-${timestamp}.json`, "application/json"],
         }
       } else if (TYPE.startsWith("image")) {
-        console.log("📥 Descargando video...");
-        await downloadFromSupabase(INPUT_PATH, RAW_IMAGE);
+        if (!areLocalFiles) {
+          console.log("📥 Descargando imagen...");
+          await downloadFromSupabase(INPUT_PATH, RAW_IMAGE);
+        } else {
+          console.log("🗃️ Copiando imagen a carpeta temporal...");
+          await copyLocalFileToTempFolder(INPUT_PATH, RAW_IMAGE);
+        }
 
         console.log("🧼 Limpiando imagen...");
         const [CLEAN_IMAGE] = await processImagesToWebp([RAW_IMAGE], TEMP_DIR);
