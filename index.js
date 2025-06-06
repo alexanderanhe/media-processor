@@ -116,14 +116,14 @@ async function processImagesToWebp(files, outputDir, quality = 80) {
 function getVideoMetadata(filePath) {
   return new Promise((resolve, reject) => {
     const cmd = `ffprobe -v quiet -print_format json -show_format -show_streams "${filePath}"`;
-    exec(cmd, (error, stdout) => {
+    exec(cmd, async (error, stdout) => {
       if (error) return reject(error);
 
       try {
         const info = JSON.parse(stdout);
         const videoStream = info.streams.find(s => s.codec_type === 'video');
         const ext = path.extname(filePath);
-        const mime_type = mime.lookup(ext) || 'application/octet-stream';
+        const mime_type = (await fileTypeFromFile(filePath))?.mime || 'application/octet-stream';
 
         resolve({
           duration: parseFloat(info.format.duration),
@@ -140,11 +140,11 @@ function getVideoMetadata(filePath) {
     });
   });
 }
-function getImageMetadata(imagePath) {
+async function getImageMetadata(imagePath) {
   const buffer = fs.readFileSync(imagePath);
   const dimensions = sizeOf(buffer);
   const ext = path.extname(imagePath);
-  const mime_type = mime.lookup(ext) || 'application/octet-stream';
+  const mime_type = (await fileTypeFromFile(imagePath))?.mime || 'application/octet-stream';
 
   return {
     width: dimensions.width,
@@ -310,12 +310,12 @@ async function deleteQueueSupabase(remotePath) {
   try {
     await removeTempFolder(); // Remove if exists
 
-    const localFiles = process.argv.slice(2).filter(f => fs.existsSync(f));
+    const localFiles = process.argv.slice(2).filter((f, i) => !i || fs.existsSync(f));
     const areLocalFiles = !!localFiles.length;
 
     console.log("📋 Obteniendo lista de todos los videos en queue...");
     const list = areLocalFiles
-      ? localFiles
+      ? localFiles.slice(1)
       : await listQueueFilesFromSupabase(QUEUE_FOLDER);
 
     for (const file of list) {
@@ -328,9 +328,10 @@ async function deleteQueueSupabase(remotePath) {
       console.log(`🗂️ Procesando archivo tipo ${TYPE}`)
       const baseName = path.basename(INPUT_PATH, path.extname(INPUT_PATH));
       const timestamp = Date.now();
-      const folderFiles = `processed/${baseName}-${timestamp}`;
+      const folderFiles = areLocalFiles ? localFiles[0]: `processed/${baseName}-${timestamp}`;
 
       let readyToUpload = null;
+      let data = null;
       if (TYPE.startsWith("video")) {
         if (!areLocalFiles) {
           console.log("📥 Descargando video...");
@@ -377,8 +378,19 @@ async function deleteQueueSupabase(remotePath) {
           "🎬 Video:": [CLEAN_VIDEO, `${folderFiles}/${baseName}-${timestamp}.mp4`, "video/mp4"],
           "📝 VTT:": [VTT, `${folderFiles}/${baseName}-${timestamp}.vtt`, "text/vtt"],
           "🔈 Audio:": [AUDIO, `${folderFiles}/${baseName}-${timestamp}.mp3`, "audio/mp3"],
-          "🖼️ Collage": [COLLAGEWEBP, `${folderFiles}/${baseName}-${timestamp}.webp`, "image/webp"],
+          "🖼️ Thumbnail": [COLLAGEWEBP, `${folderFiles}/${baseName}-${timestamp}.webp`, "image/webp"],
           "💾 Json:" : [JSONFILE, `${folderFiles}/${baseName}-${timestamp}.json`, "application/json"],
+        }
+        data = {
+          metadata,
+          thumbnail: {
+            resolution: RESOLUTION,
+            vframes: DURATION,
+          },
+          supabase: readyToUpload,
+          external: 'supabase',
+          bucket: BUCKET,
+          path: readyToUpload["🎬 Video:"][1],
         }
       } else if (TYPE.startsWith("image")) {
         if (!areLocalFiles) {
@@ -393,7 +405,7 @@ async function deleteQueueSupabase(remotePath) {
         const [CLEAN_IMAGE] = await processImagesToWebp([RAW_IMAGE], TEMP_DIR);
 
         console.log("🏁 Obteniendo metadata...");
-        const metadata = getImageMetadata(CLEAN_IMAGE);
+        const metadata = await getImageMetadata(CLEAN_IMAGE);
 
         console.log("📝 Generando archivo json...");
         await createJSON({ metadata }, JSONFILE);
@@ -403,6 +415,13 @@ async function deleteQueueSupabase(remotePath) {
           // LABEL:   [ LOCALPATH,   SUPABASE_PATH,  MIME  ]
           "🖼️ Image": [CLEAN_IMAGE, `${folderFiles}/${baseName}-${timestamp}.webp`, "image/webp"],
           "💾 Json:" : [JSONFILE, `${folderFiles}/${baseName}-${timestamp}.json`, "application/json"],
+        }
+        data = {
+          metadata,
+          supabase: readyToUpload,
+          external: 'supabase',
+          bucket: BUCKET,
+          path: readyToUpload["🖼️ Image"][1],
         }
       }
 
@@ -418,6 +437,19 @@ async function deleteQueueSupabase(remotePath) {
 
         console.log("🗑️ Eliminando archivos temporales...");
         await removeTempFolder()
+
+        if (areLocalFiles) {
+          const videoId = localFiles[0];
+          await axios.post(`${process.env.WEBHOOK_API}/api/webhook/video/supabase`, {
+            videoId,
+            ...data
+          }, {
+            headers: {
+              'x-api-key': process.env.SERVER_API_KEY
+            }
+          })
+          console.log(`💾 File was updated<${videoId}>!`)
+        }
       }
 
       console.log(`✅ Proceso completado para ${INPUT_PATH}\n`);

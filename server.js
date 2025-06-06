@@ -27,18 +27,21 @@ app.use((req, res, next) => {
 
 // === Endpoint para recibir archivo y ejecutar el script ===
 app.post('/run-pipeline', upload.single('file'), (req, res) => {
+  const { title, description, videoId } = req.body;
   if (!req.file) {
     return res.status(400).json({ success: false, message: 'No file uploaded' })
   }
-
+  if (!videoId) {
+    return res.status(400).json({ success: false, message: 'No videoId exists' })
+  }
   const tempFilePath = req.file.path
   console.log(`📥 Archivo recibido: ${req.file.originalname}`)
-
+  
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
-
-  const script = spawn('node', [SCRIPT_PATH, tempFilePath])
+  
+  const script = spawn('node', [SCRIPT_PATH, videoId, tempFilePath])
 
   const send = (text) => {
     res.write(`data: ${text.trim()}\n\n`)
